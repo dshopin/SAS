@@ -1,7 +1,6 @@
 /**********************************************************************************************************************************
-MACRO for creating Excel-data dictionary for a dataset
+MACRO for creating Excel-dictionary for a dataset
 ***********************************************************************************************************************************/
-
 %macro XLSDictionary(
 						outpath=,
 						/*Path to the output location*/
@@ -24,9 +23,11 @@ proc format;
 		picture mypct low-high='000,009.999%';
 run;
 
+%local dotpos dsn lib excl_r excl_q categ_r categ_q numbars datevars charvars;
+
 /*Extracting library and dataset name for input data*/
 %let dotpos=%index(&data,.)	;
-%if dotpos^=0 %then %do;
+%if &dotpos^=0 %then %do;
 	%let dsn=%substr(&data,%eval(&dotpos+1),%eval(%length(&data)-&dotpos));
 	%let lib=%substr(&data,1,%eval(&dotpos-1));
 %end;
@@ -35,28 +36,121 @@ run;
 	%let lib=WORK ;
 %end;
 
+/*If categ= and excl= values are range of variables with mask : (e.g. price: for price1, price2 etc)
+then we separate them and delete :*/
+%do i=1 %to %sysfunc(countw(&excl,%str( )));
+	%let var=%scan(&excl,&i,%str( ));
+	%if %index(&var,:)>0 %then %do;
+		%if %symexist(excl_r) %then %let excl_r=&excl_r %substr(&var,1,%eval(%length(&var)-1));
+		%else  %let excl_r=%substr(&var,1,%eval(%length(&var)-1));
+	%end;
+	%else %do;
+		%if %symexist(excl_q) %then %let excl_q=&excl_q  &var;
+		%else  %let excl_q=&var;
+	%end;
+%end;
+
+%do i=1 %to %sysfunc(countw(&categ,%str( )));
+	%let var= %scan(&categ,&i,	%str( ));
+	%if %index(&var,:)>0 %then %do;
+		%if %symexist(categ_r) %then %let categ_r=&categ_r %substr(&var,1,%eval(%length(&var)-1));
+		%else  %let categ_r=%substr(&var,1,%eval(%length(&var)-1));
+	%end;
+	%else %do;
+		%if %symexist(categ_q) %then %let categ_q=&categ_q  &var;
+		%else  %let categ_q=&var;
+	%end;
+%end;
+
+
+
 /*Adding quotes around variables that should be considered categorical (from &categ) or excluded
 First, add quote in the start and end, then replacing blanks between values with quote-blank-quote
 and then upcase-ing everything*/
-%let categ_q=%upcase(%sysfunc(transtrn(%str(%')&categ%str(%'),%str( ),%str(' '))));
-%let excl_q=%upcase(%sysfunc(transtrn(%str(%')&excl%str(%'),%str( ),%str(' '))));
+%if %length(&categ_q)>0 %then %do;
+	%let categ_q=%upcase(%sysfunc(transtrn(%str(%')&categ_q%str(%'),%str( ),%str(' '))));
+%end;
+%if %length(&excl_q)>0 %then %do;
+	%let excl_q=%upcase(%sysfunc(transtrn(%str(%')&excl_q%str(%'),%str( ),%str(' '))));
+%end;
+%if %length(&categ_r)>0 %then %do;
+	%let categ_r=%upcase(%sysfunc(transtrn(%str(%')&categ_r%str(%%%'),%str( ),%str(%%' '))));
+%end;
+%if %length(&excl_r)>0 %then %do;
+	%let excl_r=%upcase(%sysfunc(transtrn(%str(%')&excl_r%str(%%%'),%str( ),%str(%%' '))));
+%end;
+
+%put %length(categ_q);
 
 /*Getting numeric, date and character variables separately*/
 proc sql noprint;
 	select name into :numvars separated by ' '
 	from sashelp.vcolumn
 	where libname=upcase("&lib") and memname=upcase("&dsn")
-	and	type='num' and format not like 'DATE%' and upcase(name) not in (&categ_q &excl_q);
+		and	type='num' and format not like 'DATE%'
+		%if %length(&categ_q)>0 or %length(&excl_q)>0 %then %do;
+			and upcase(name) not in (&categ_q &excl_q)
+		%end;
+
+		%if %length(&categ_r)>0 %then %do;
+			%do i=1 %to %sysfunc(countw(&categ_r,%str( )));
+				and upcase(name) not like %scan(&categ_r,&i,%str( ))
+			%end;
+		%end;
+
+		%if %length(&excl_r)>0 %then %do;
+			%do i=1 %to %sysfunc(countw(&excl_r,%str( )));
+				and upcase(name) not like %scan(&excl_r,&i,%str( ));
+			%end;
+		%end;
+		;
 
 	select name into :datevars separated by ' '
 	from sashelp.vcolumn
 	where libname=upcase("&lib") and memname=upcase("&dsn")
-	and	type='num' and format like 'DATE%' and upcase(name) not in (&categ_q &excl_q);
+	and	type='num' and format like 'DATE%'
+		%if %length(&categ_q)>0 or %length(&excl_q)>0 %then %do;
+			and upcase(name) not in (&categ_q &excl_q)
+		%end;
+
+		%if %length(&categ_r)>0 %then %do;
+			%do i=1 %to %sysfunc(countw(&categ_r,%str( )));
+				and upcase(name) not like %scan(&categ_r,&i,%str( ))
+			%end;
+		%end;
+
+		%if %length(&excl_r)>0 %then %do;
+			%do i=1 %to %sysfunc(countw(&excl_r,%str( )));
+				and upcase(name) not like %scan(&excl_r,&i,%str( ))
+			%end;
+		%end;
+		;
 
 	select name into :charvars separated by ' '
 	from sashelp.vcolumn
 	where libname=upcase("&lib") and memname=upcase("&dsn")
-	and	(    type='char' or upcase(name) in (&categ_q)  ) and upcase(name) not in (&excl_q);
+		and	
+		(
+		type='char' 
+		%if %length(&categ_q)>0 %then %do;
+			or upcase(name) in (&categ_q)
+		%end;
+		%if %length(&categ_r)>0 %then %do;
+			%do i=1 %to %sysfunc(countw(&categ_r,%str( )));
+				or upcase(name) like %scan(&categ_r,&i,%str( ))
+			%end;
+		%end;
+
+		)
+		%if %length(&excl_q)>0 %then %do;
+			and upcase(name) not in (&excl_q)
+		%end;
+		%if %length(&excl_r)>0 %then %do;
+			%do i=1 %to %sysfunc(countw(&excl_r,%str( )));
+				and upcase(name) not like %scan(&excl_r,&i,%str( ))
+			%end;
+		%end;
+		;
 quit;
 
 
@@ -80,22 +174,25 @@ ods tagsets.ExcelXP options(embedded_titles='yes'
 							Autofit_height='yes'
 							sheet_interval='none');
 title "Summary Statistics for SAS table &dsn";
-title2 'Date variables';
-
 options label=off;
-proc tabulate data=&data;
-	var &datevars;
-	table	&datevars
-			,n nmiss (min q1 mean median q3 max)*f=date9.;
-run;
-title;
-
-title2 'Numeric variables';
-proc tabulate data=&data;
-	var  &numvars;
-	table &numvars
-			,n nmiss (min q1 mean median q3 max)*f=best12.;
-run;
+%if %length(&datevars)>0 %then %do;
+	title2 'Date variables';
+	proc tabulate data=&data;
+		var &datevars;
+		table	&datevars
+				,n nmiss (min q1 mean median q3 max)*f=date9.;
+	run;
+	title;
+%end;
+%if %length(&numvars)>0 %then %do;
+	title2 "Numeric variables";
+	proc tabulate data=&data;
+		var  &numvars;
+		table &numvars
+				,n nmiss (min q1 mean median q3 max)*f=best12.;
+	run;
+	title;
+%end;
                               
                                              
 *formatting values in PROC FREQ output;
@@ -113,12 +210,13 @@ PROC TEMPLATE;
     END;                                     
   END;                                       
 RUN;        
-
-title2 'Categorical variables';
-
-proc freq data=&data;
-	tables	&charvars/ nocum missing;
-run;
+%if %length(&charvars)>0 %then %do;
+	title2 'Categorical variables';
+	proc freq data=&data;
+		tables	&charvars/ nocum missing;
+	run;
+	title;
+%end;
 
 
 ods tagsets.excelxp close;
@@ -182,9 +280,11 @@ run;
 /*						out=test,*/
 /*						/*Name of output xls-file*/*/
 /**/
-/*						data=sashelp.snacks,*/
+/*						data=sashelp.Pricedata,*/
 /*						/*Dataset*/*/
 /**/
-/*						categ=Advertised holiday*/
+/*						categ=price:,*/
 /*						/*numeric/date variables that should be summarized as categorical*/*/
+/**/
+/*						excl=sale product: price*/
 /*					)*/
